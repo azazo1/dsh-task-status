@@ -23,6 +23,7 @@ A background-task status bar above the chat input box: running-task count + clic
 | Status bar | Dock card above the chat input box: `⚙ N background tasks running` |
 | Expandable details | Click a task row to expand: status / duration / details + output tail |
 | Live tail | Polls the output route every 1s while expanded, re-rendering the whole block (the mirror patch guarantees zero contention with the official `task_output` tool and a consistent view) |
+| Manual stop | Click the stop icon on a running task; the producer receives a user-requested cancellation reason |
 | Scrolling area | Output area capped at 10 lines (160px); overflow becomes a scrollbar (tail keeps the end, scrollable to review) |
 | Chat page only | Automatically hidden on non-Chat views (trajectory / taskboard, etc.) |
 
@@ -32,6 +33,7 @@ A background-task status bar above the chat input box: running-task count + clic
 |---|---|
 | `/plugins/dsh-task-status/tasks` | Task list (read-only, filtered by session; owned + unowned union) |
 | `/plugins/dsh-task-status/output` | Task output tail (`full:true` accumulates the full text; unknown id → 404) |
+| `/plugins/dsh-task-status/kill` | Stop an owned running task with a user-requested cancellation reason |
 
 **Output tail contention semantics** (official 0809 API constraint): `tasks.read` is a consumptive, incremental read (one shared cursor per task). This plugin applies a **mirror patch** to `ctx.tasks.read` — the official read becomes buffered mirror (increments already read by others, not re-consumed) + direct read of the latest (normal consumption); the plugin's own reads go straight to the underlying rawRead. The official tool and the plugin see the same increment sequence (no duplicates, no loss); only the proactively self-read part can no longer be replayed by the official side alone (official semantics is inherently incremental, so model perception is unaffected).
 

@@ -35,6 +35,9 @@ const TASKS_PATH = '/plugins/dsh-task-status/tasks'
 /** Node half 任务输出读取路由（与 src/index.mjs 的 OUTPUT_PATH 一致）。 */
 const OUTPUT_PATH = '/plugins/dsh-task-status/output'
 
+/** Node half 任务终止路由。 */
+const KILL_PATH = '/plugins/dsh-task-status/kill'
+
 /** 轮询间隔：活跃任务状态条不需要亚秒刷新。 */
 const POLL_MS = 1000
 
@@ -49,6 +52,7 @@ const zh = {
   'task.completed': '已完成',
   'task.killed': '已终止',
   'task.failed': '失败',
+  'task.cancel': '终止任务',
 } satisfies Record<string, string>
 /** Task-status namespace key union. */
 type TaskStatusKey = keyof typeof zh
@@ -62,6 +66,7 @@ const en = {
   'task.completed': 'Completed',
   'task.killed': 'Killed',
   'task.failed': 'Failed',
+  'task.cancel': 'Stop task',
 } satisfies Record<string, string>
 
 /** 布局变量对齐官方 dock 家族（ConversationRoot.module.css）。 */
@@ -114,6 +119,20 @@ function useSessionTasks(sessionId: string): WireTask[] {
   return tasks.filter(task => task.ownerSession === sessionId)
 }
 
+/** Request a user-intended cancellation for one task. */
+async function requestTaskKill(taskId: string, sessionId: string): Promise<boolean> {
+  try {
+    const res = await fetch(KILL_PATH, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify({ id: taskId, sessionId }),
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
 /**
  * 任务输出 tail：展开任务时**自动轮询** Node half 输出路由。Node half 给
  * `ctx.tasks.read` 打了**镜像补丁**（见 src/index.mjs）——官方 read = 缓冲
@@ -164,7 +183,15 @@ export function TaskStatusBar(
   const [inChat, setInChat] = useState(false)
   const [open, setOpen] = useState(false)
   const [expandedTask, setExpandedTask] = useState<string | null>(null)
+  const [cancellingTask, setCancellingTask] = useState<string | null>(null)
   const taskOutput = useTaskOutput(expandedTask)
+
+  const cancelTask = async (taskId: string): Promise<void> => {
+    if (cancellingTask !== null) return
+    setCancellingTask(taskId)
+    await requestTaskKill(taskId, session.sessionId)
+    setCancellingTask(null)
+  }
 
   // 对话页探针：flow 列存在性（navbar 同信号）。body 级 observer 只跑
   // querySelector，回调轻量；view 切换（flow 移除/重建）都触发。
@@ -245,6 +272,26 @@ export function TaskStatusBar(
           <span style={{ fontSize: 12, color: meta.color, whiteSpace: 'nowrap' }}>
             {t(meta.label as TaskStatusKey)}
           </span>
+          {task.status === 'running' && (
+            <button
+              type="button"
+              title={t('task.cancel')}
+              aria-label={t('task.cancel')}
+              disabled={cancellingTask === task.id}
+              onClick={(event) => {
+                event.stopPropagation()
+                void cancelTask(task.id)
+              }}
+              style={{
+                width: 24, height: 24, padding: 0, border: 0, borderRadius: 4,
+                cursor: cancellingTask === task.id ? 'wait' : 'pointer',
+                color: 'var(--dsw-alias-label-tertiary)',
+                background: 'transparent', fontSize: 13, lineHeight: '24px',
+              }}
+            >
+              ■
+            </button>
+          )}
         </div>
         {expanded && (
           <div style={{ padding: '0 12px 8px 34px', fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-label-tertiary)', display: 'flex', flexDirection: 'column', gap: 2 }}>

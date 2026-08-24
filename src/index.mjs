@@ -30,6 +30,9 @@ export const TASKS_PATH = '/plugins/dsh-task-status/tasks'
 /** 任务输出读取路由（tail：返回 shadow 缓冲累积全文，full: true 契约）。 */
 export const OUTPUT_PATH = '/plugins/dsh-task-status/output'
 
+/** 任务终止路由（只允许任务 owner session 发起）。 */
+export const KILL_PATH = '/plugins/dsh-task-status/kill'
+
 /** shadow 缓冲上限：超限丢最旧（tail 保尾），防长任务无界增长。 */
 const OUTPUT_BUF_MAX = 64 * 1024
 
@@ -117,6 +120,42 @@ function readTaskOutput(ctx, id) {
   return { text: outputBuffers.get(id) ?? '', snapshot: read.snapshot }
 }
 
+function findOwnedTask(ctx, id, sessionId) {
+  for (const agent of ctx.agents.list()) {
+    const snapshot = ctx.jobs.list(agent).find(task => task.id === id)
+    if (snapshot?.ownerSession === sessionId) return { agent, snapshot }
+  }
+  return null
+}
+
+/**
+ * Read a small JSON request body without accepting an unbounded payload.
+ * @param req - host HTTP request.
+ * @returns parsed request body.
+ */
+async function readJsonBody(req) {
+  let body = ''
+  for await (const chunk of req) {
+    body += chunk
+    if (body.length > 8192) throw new Error('request body too large')
+  }
+  return JSON.parse(body)
+}
+
+/**
+ * Cancel a task from the status bar on behalf of its owner session.
+ * @param ctx - host cordis context.
+ * @param id - task id.
+ * @param sessionId - current browser session id.
+ * @returns kill result and the post-kill snapshot.
+ */
+function killTask(ctx, id, sessionId) {
+  const owned = findOwnedTask(ctx, id, sessionId)
+  if (owned === null) return null
+  const outcome = ctx.jobs.kill(id, owned.agent, 'User requested cancellation from task-status UI')
+  return { outcome, snapshot: ctx.jobs.get(id, owned.agent) }
+}
+
 /**
  * 插件主体：打 read 镜像补丁 + 注册任务列表与输出读取路由。镜像补丁让官方
  * read 优先从缓冲切片（零消耗），无货回退直读（原语义）；dispose 时恢复
@@ -185,11 +224,45 @@ export function apply(ctx) {
         }
       },
     })
+    const disposeKill = ctx.webServer.register({
+      kind: 'exact',
+      path: KILL_PATH,
+      handler: async (req, res) => {
+        try {
+          if (req.method !== 'POST') {
+            res.writeHead(405, { allow: 'POST' })
+            res.end()
+            return
+          }
+          const body = await readJsonBody(req)
+          const id = typeof body?.id === 'string' ? body.id : ''
+          const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : ''
+          if (id === '' || sessionId === '') {
+            res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+            res.end(JSON.stringify({ error: 'missing task id or session id' }))
+            return
+          }
+          const result = killTask(ctx, id, sessionId)
+          if (result === null) {
+            res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })
+            res.end(JSON.stringify({ error: 'task not found for session' }))
+            return
+          }
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ ...result, reason: 'user-requested-cancellation' }))
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: message }))
+        }
+      },
+    })
     return () => {
       ctx.jobs.read = rawRead
       rawRead = undefined
       disposeTasks()
       disposeOutput()
+      disposeKill()
     }
   }, 'task-status: mirror jobs.read + jobs/output routes')
 }

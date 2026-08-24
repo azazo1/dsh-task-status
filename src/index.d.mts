@@ -6,6 +6,9 @@ export const TASKS_PATH: string
 /** 任务输出读取路由（tail：返回 shadow 缓冲累积全文，full: true 契约）。 */
 export const OUTPUT_PATH: string
 
+/** 任务终止路由（只允许任务 owner session 发起）。 */
+export const KILL_PATH: string
+
 /** Cordis 插件名。 */
 export const name: string
 
