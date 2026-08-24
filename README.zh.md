@@ -42,13 +42,10 @@
 **推荐：git 源一行安装**（构建产物已入库，git 源不触发构建）：
 
 ```sh
-dsh plugin --profile web add "github:azazo1/dsh-task-status#main"   # git 源一行（构建产物已入库）
-# 或 npm 源：dsh plugin --profile web add @vlln/dsh-task-status@0.3.1
+dsh plugin add --profile web azazo1/dsh-task-status
 ```
 
-或本地目录（有源码时）：`git clone` 后 `cd dsh-task-status && dsh plugin --profile web add .`。
-
-装完 **重启 web** 生效；设置页「插件」面板可停用/启用。
+装完后重启 web 生效; 可在设置页 Plugins 面板停用或启用.
 
 ## 使用
 

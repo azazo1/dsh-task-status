@@ -1,4 +1,4 @@
-// vlln/task-status Node half：自造数据通道——注册一个只读 JSON 路由，
+// azazo1/dsh-task-status Node half：自造数据通道——注册一个只读 JSON 路由，
 // 轮询时返回宿主 `ctx.jobs` 的当前任务快照。不依赖官方推送帧（useTasks /
 // task/snapshot）：客户端每 1s fetch 本路由刷新，官方树零改动。
 //

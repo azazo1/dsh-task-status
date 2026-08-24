@@ -1,5 +1,5 @@
 {
-  "name": "@vlln/dsh-task-status",
+  "name": "dsh-task-status",
   "description": "后台任务状态条——对话输入区上方的任务进度 UI（官方 dock 槽 + Node 轮询路由）",
   "version": "0.3.1",
   "type": "module",

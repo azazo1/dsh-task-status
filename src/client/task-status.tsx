@@ -1,4 +1,4 @@
-// vlln/task-status 浏览器端 half：验证 S2 后台任务 UI——对话页对话框
+// azazo1/dsh-task-status 浏览器端 half：验证 S2 后台任务 UI——对话页对话框
 // （composer）上方的任务状态条。经 `conversation.input.dock`（list 槽，
 // 与 queue/todo 同 strip，官方既有）注册。
 //
