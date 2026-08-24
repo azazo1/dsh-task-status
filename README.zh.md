@@ -40,7 +40,7 @@
 **推荐：git 源一行安装**（构建产物已入库，git 源不触发构建）：
 
 ```sh
-dsh plugin --profile web add "github:vlln/dsh-task-status#main"   # git 源一行（构建产物已入库）
+dsh plugin --profile web add "github:azazo1/dsh-task-status#main"   # git 源一行（构建产物已入库）
 # 或 npm 源：dsh plugin --profile web add @vlln/dsh-task-status@0.3.1
 ```
 

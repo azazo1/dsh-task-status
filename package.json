@@ -53,6 +53,6 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vlln/+process.argv[1]+.git"
+    "url": "git+https://github.com/azazo1/dsh-task-status.git"
   }
 }

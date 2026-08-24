@@ -40,7 +40,7 @@ A background-task status bar above the chat input box: running-task count + clic
 **Recommended: one-line install from a git source** (build artifacts are committed; a git source doesn't trigger a build):
 
 ```sh
-dsh plugin --profile web add "github:vlln/dsh-task-status#main"   # one-line git source (build artifacts committed)
+dsh plugin --profile web add "github:azazo1/dsh-task-status#main"   # one-line git source (build artifacts committed)
 # or npm source: dsh plugin --profile web add @vlln/dsh-task-status@0.3.1
 ```
 
