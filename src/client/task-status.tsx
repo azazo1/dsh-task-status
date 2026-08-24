@@ -10,7 +10,7 @@
 // navbar 同一信号）——组件用 MutationObserver 检测其存在性，切到
 // trajectory/taskboard 等视图时隐藏、切回恢复。零官方改动。
 import { useEffect, useRef, useState } from 'react'
-import { StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
+import { RiskConfirmation, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { Context } from 'cordis'
 import type { ReactNode } from 'react'
 // Context merges: slots/locale (runtime) reach this program through their
@@ -53,6 +53,11 @@ const zh = {
   'task.killed': '已终止',
   'task.failed': '失败',
   'task.cancel': '终止任务',
+  'confirm.title': '确认终止任务？',
+  'confirm.description': '终止后任务会收到用户主动终止信号, 未完成的工作可能丢失.',
+  'confirm.acknowledge': '我确认要终止这个任务',
+  'confirm.cancel': '取消',
+  'confirm.confirm': '终止任务',
 } satisfies Record<string, string>
 /** Task-status namespace key union. */
 type TaskStatusKey = keyof typeof zh
@@ -67,6 +72,11 @@ const en = {
   'task.killed': 'Killed',
   'task.failed': 'Failed',
   'task.cancel': 'Stop task',
+  'confirm.title': 'Stop task?',
+  'confirm.description': 'The task will receive a user cancellation signal and unfinished work may be lost.',
+  'confirm.acknowledge': 'I confirm that I want to stop this task',
+  'confirm.cancel': 'Cancel',
+  'confirm.confirm': 'Stop task',
 } satisfies Record<string, string>
 
 /** 布局变量对齐官方 dock 家族（ConversationRoot.module.css）。 */
@@ -183,6 +193,8 @@ export function TaskStatusBar(
   const [inChat, setInChat] = useState(false)
   const [open, setOpen] = useState(false)
   const [expandedTask, setExpandedTask] = useState<string | null>(null)
+  const [confirmingTask, setConfirmingTask] = useState<string | null>(null)
+  const [acknowledged, setAcknowledged] = useState(false)
   const [cancellingTask, setCancellingTask] = useState<string | null>(null)
   const taskOutput = useTaskOutput(expandedTask)
 
@@ -191,6 +203,13 @@ export function TaskStatusBar(
     setCancellingTask(taskId)
     await requestTaskKill(taskId, session.sessionId)
     setCancellingTask(null)
+  }
+
+  const confirmTask = (): void => {
+    const taskId = confirmingTask
+    setConfirmingTask(null)
+    setAcknowledged(false)
+    if (taskId !== null) void cancelTask(taskId)
   }
 
   // 对话页探针：flow 列存在性（navbar 同信号）。body 级 observer 只跑
@@ -210,6 +229,25 @@ export function TaskStatusBar(
   const active = tasks.filter(task => task.status === 'running' || task.status === 'stopping')
   const running = active.filter(task => task.status === 'running').length
   if (active.length === 0) return null
+
+  const confirmation = (
+    <RiskConfirmation
+      open={confirmingTask !== null}
+      title={t('confirm.title')}
+      description={t('confirm.description')}
+      acknowledgeLabel={t('confirm.acknowledge')}
+      cancelLabel={t('confirm.cancel')}
+      confirmLabel={t('confirm.confirm')}
+      acknowledged={acknowledged}
+      disabled={cancellingTask !== null}
+      onAcknowledgedChange={setAcknowledged}
+      onCancel={() => {
+        setAcknowledged(false)
+        setConfirmingTask(null)
+      }}
+      onConfirm={confirmTask}
+    />
+  )
 
   const statusOf = (status: string): { color: string; glyph: string; label: string } =>
     STATUS_META[status] ?? { state: 'warning', label: status }
@@ -280,7 +318,8 @@ export function TaskStatusBar(
               disabled={cancellingTask === task.id}
               onClick={(event) => {
                 event.stopPropagation()
-                void cancelTask(task.id)
+                setConfirmingTask(task.id)
+                setAcknowledged(false)
               }}
               style={{
                 width: 24, height: 24, padding: 0, border: 0, borderRadius: 4,
@@ -337,10 +376,10 @@ export function TaskStatusBar(
   // 单任务：直接渲染该行（可点击展开 detail），无计数头。
   if (active.length === 1) {
     const single = active[0]
-    if (single !== undefined) return card(row(single))
+    if (single !== undefined) return <>{card(row(single))}{confirmation}</>
     return null
   }
-  return card(
+  return <>{card(
     <>
       {header}
       {open && (
@@ -349,7 +388,7 @@ export function TaskStatusBar(
         </div>
       )}
     </>,
-  )
+  )}{confirmation}</>
 }
 
 /** 需要此插件声明的服务：slots + locale。 */

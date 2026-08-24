@@ -33,6 +33,12 @@ export const OUTPUT_PATH = '/plugins/dsh-task-status/output'
 /** 任务终止路由（只允许任务 owner session 发起）。 */
 export const KILL_PATH = '/plugins/dsh-task-status/kill'
 
+/** User-visible reason preserved for the agent's next job read. */
+const USER_CANCEL_REASON = 'cancelled by user from task-status UI'
+
+/** taskId -> user cancellation reason. */
+const cancellationReasons = new Map()
+
 /** shadow 缓冲上限：超限丢最旧（tail 保尾），防长任务无界增长。 */
 const OUTPUT_BUF_MAX = 64 * 1024
 
@@ -58,17 +64,26 @@ export const name = 'task-status'
 /** 所需服务：web 形状的 HTTP 载体 + 任务注册表 + agent 注册表。 */
 export const inject = ['webServer', 'jobs', 'agents']
 
+/** Add the user cancellation reason to a task snapshot without mutating host state. */
+function decorateSnapshot(snapshot) {
+  const reason = cancellationReasons.get(snapshot.id)
+  if (reason === undefined) return snapshot
+  const detail = snapshot.detail === undefined ? reason : `${snapshot.detail}; ${reason}`
+  return { ...snapshot, detail }
+}
+
 /** 裁剪任务快照到 wire 视图（内部记账不跨线；owner 只投影 session id）。 */
 function toWire(snapshot) {
+  const visible = decorateSnapshot(snapshot)
   return {
-    id: snapshot.id,
-    kind: snapshot.kind,
-    label: snapshot.label,
-    status: snapshot.status,
-    ...(snapshot.detail !== undefined ? { detail: snapshot.detail } : {}),
-    startedAt: snapshot.startedAt,
-    ...(snapshot.finishedAt !== undefined ? { finishedAt: snapshot.finishedAt } : {}),
-    ...(snapshot.ownerSession !== undefined ? { ownerSession: snapshot.ownerSession } : {}),
+    id: visible.id,
+    kind: visible.kind,
+    label: visible.label,
+    status: visible.status,
+    ...(visible.detail !== undefined ? { detail: visible.detail } : {}),
+    startedAt: visible.startedAt,
+    ...(visible.finishedAt !== undefined ? { finishedAt: visible.finishedAt } : {}),
+    ...(visible.ownerSession !== undefined ? { ownerSession: visible.ownerSession } : {}),
   }
 }
 
@@ -117,7 +132,7 @@ function readTaskOutput(ctx, id) {
   }
   const read = caller === undefined ? rawRead(id) : rawRead(id, caller)
   accumulate(id, read?.text)
-  return { text: outputBuffers.get(id) ?? '', snapshot: read.snapshot }
+  return { text: outputBuffers.get(id) ?? '', snapshot: decorateSnapshot(read.snapshot) }
 }
 
 function findOwnedTask(ctx, id, sessionId) {
@@ -153,7 +168,8 @@ function killTask(ctx, id, sessionId) {
   const owned = findOwnedTask(ctx, id, sessionId)
   if (owned === null) return null
   const outcome = ctx.jobs.kill(id, owned.agent, 'User requested cancellation from task-status UI')
-  return { outcome, snapshot: ctx.jobs.get(id, owned.agent) }
+  if (outcome === 'requested') cancellationReasons.set(id, USER_CANCEL_REASON)
+  return { outcome, snapshot: decorateSnapshot(ctx.jobs.get(id, owned.agent)) }
 }
 
 /**
@@ -180,7 +196,7 @@ export function apply(ctx) {
       accumulate(id, result?.text)
       const text = mirror + (result?.text ?? '')
       officialConsumed.set(id, (buf?.length ?? 0) + (typeof result?.text === 'string' ? result.text.length : 0))
-      return { text, snapshot: result.snapshot }
+      return { text, snapshot: decorateSnapshot(result.snapshot) }
     }
     const disposeTasks = ctx.webServer.register({
       kind: 'exact',
