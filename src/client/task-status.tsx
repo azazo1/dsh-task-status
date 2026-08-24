@@ -55,7 +55,6 @@ const zh = {
   'task.cancel': '终止任务',
   'confirm.title': '确认终止任务？',
   'confirm.description': '终止后任务会收到用户主动终止信号, 未完成的工作可能丢失.',
-  'confirm.acknowledge': '我确认要终止这个任务',
   'confirm.cancel': '取消',
   'confirm.confirm': '终止任务',
 } satisfies Record<string, string>
@@ -74,7 +73,6 @@ const en = {
   'task.cancel': 'Stop task',
   'confirm.title': 'Stop task?',
   'confirm.description': 'The task will receive a user cancellation signal and unfinished work may be lost.',
-  'confirm.acknowledge': 'I confirm that I want to stop this task',
   'confirm.cancel': 'Cancel',
   'confirm.confirm': 'Stop task',
 } satisfies Record<string, string>
@@ -194,7 +192,6 @@ export function TaskStatusBar(
   const [open, setOpen] = useState(false)
   const [expandedTask, setExpandedTask] = useState<string | null>(null)
   const [confirmingTask, setConfirmingTask] = useState<string | null>(null)
-  const [acknowledged, setAcknowledged] = useState(false)
   const [cancellingTask, setCancellingTask] = useState<string | null>(null)
   const taskOutput = useTaskOutput(expandedTask)
 
@@ -208,7 +205,6 @@ export function TaskStatusBar(
   const confirmTask = (): void => {
     const taskId = confirmingTask
     setConfirmingTask(null)
-    setAcknowledged(false)
     if (taskId !== null) void cancelTask(taskId)
   }
 
@@ -235,14 +231,10 @@ export function TaskStatusBar(
       open={confirmingTask !== null}
       title={t('confirm.title')}
       description={t('confirm.description')}
-      acknowledgeLabel={t('confirm.acknowledge')}
       cancelLabel={t('confirm.cancel')}
       confirmLabel={t('confirm.confirm')}
-      acknowledged={acknowledged}
       disabled={cancellingTask !== null}
-      onAcknowledgedChange={setAcknowledged}
       onCancel={() => {
-        setAcknowledged(false)
         setConfirmingTask(null)
       }}
       onConfirm={confirmTask}
@@ -319,7 +311,6 @@ export function TaskStatusBar(
               onClick={(event) => {
                 event.stopPropagation()
                 setConfirmingTask(task.id)
-                setAcknowledged(false)
               }}
               style={{
                 width: 24, height: 24, padding: 0, border: 0, borderRadius: 4,
