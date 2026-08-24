@@ -11,7 +11,6 @@
 // trajectory/taskboard 等视图时隐藏、切回恢复。零官方改动。
 import { useEffect, useRef, useState } from 'react'
 import { Button, Modal, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
-import { renderAnsi } from './ansi'
 import type { Context } from 'cordis'
 import type { ReactNode } from 'react'
 // Context merges: slots/locale (runtime) reach this program through their
@@ -334,22 +333,16 @@ export function TaskStatusBar(
             {task.detail !== undefined && <span>详情：{task.detail}</span>}
             {taskOutput !== '' && (
               // 输出区上限：最多 10 行（160px），超出变滚动条（tail 保尾可回看）。
-              <pre style={{
+              <div style={{
                 margin: '2px 0 0',
-                padding: '8px 10px',
                 fontSize: 11,
                 lineHeight: '16px',
-                fontFamily: 'var(--dsh-code-font-family, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)',
-                color: '#d8dee9',
-                background: '#17191d',
-                border: '1px solid rgba(255, 255, 255, 0.08)',
-                borderRadius: 6,
-                whiteSpace: 'pre',
-                wordBreak: 'normal',
-                tabSize: 4,
+                fontFamily: 'var(--dsh-code-font-family, ui-monospace, monospace)',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
                 maxHeight: 160,
-                overflow: 'auto',
-              }}>{renderAnsi(taskOutput)}</pre>
+                overflowY: 'auto',
+              }}>{taskOutput}</div>
             )}
           </div>
         )}
