@@ -1,0 +1,51 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - name: Validate tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag != '' && inputs.tag || github.ref_name }}"
+          version="$(node -p "require('./package.json').version")"
+          test "$tag" = "v$version"
+          test "$(git cat-file -t "refs/tags/$tag")" = tag
+          git cat-file tag "refs/tags/$tag" | sed '1,/^$/d' > tag-notes.md
+          cmp -s "docs/changelog/$version.md" tag-notes.md
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag != '' && inputs.tag || github.ref_name }}"
+          version="$(node -p "require('./package.json').version")"
+          pnpm pack --pack-destination dist
+          sha256sum dist/*.tgz > dist/SHA256SUMS
+          gh release create "$tag" --verify-tag --title "${{ github.event.repository.name }} v$version" --notes-file "docs/changelog/$version.md" dist/*.tgz dist/SHA256SUMS
