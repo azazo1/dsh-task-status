@@ -10,7 +10,7 @@
 // navbar 同一信号）——组件用 MutationObserver 检测其存在性，切到
 // trajectory/taskboard 等视图时隐藏、切回恢复。零官方改动。
 import { useEffect, useRef, useState } from 'react'
-import { RiskConfirmation, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Modal, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { Context } from 'cordis'
 import type { ReactNode } from 'react'
 // Context merges: slots/locale (runtime) reach this program through their
@@ -227,17 +227,22 @@ export function TaskStatusBar(
   if (active.length === 0) return null
 
   const confirmation = (
-    <RiskConfirmation
+    <Modal
       open={confirmingTask !== null}
+      onClose={() => setConfirmingTask(null)}
       title={t('confirm.title')}
       description={t('confirm.description')}
-      cancelLabel={t('confirm.cancel')}
-      confirmLabel={t('confirm.confirm')}
-      disabled={cancellingTask !== null}
-      onCancel={() => {
-        setConfirmingTask(null)
-      }}
-      onConfirm={confirmTask}
+      closeLabel={t('confirm.cancel')}
+      footer={
+        <>
+          <Button variant="secondary" onClick={() => setConfirmingTask(null)}>
+            {t('confirm.cancel')}
+          </Button>
+          <Button variant="primary" disabled={cancellingTask !== null} onClick={confirmTask}>
+            {t('confirm.confirm')}
+          </Button>
+        </>
+      }
     />
   )
 
