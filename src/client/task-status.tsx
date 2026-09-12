@@ -12,7 +12,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button, Modal, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { Context } from 'cordis'
-import type { ReactNode } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 // Context merges: slots/locale (runtime) reach this program through their
 // client entries.
 import type {} from '@deepseek-ai/dsh-client-runtime/client'
@@ -180,6 +180,60 @@ function useTaskOutput(taskId: string | null): string {
 }
 
 /**
+ * 任务行标签 + 悬停全文气泡。label 就是派发后台任务时的命令行, 行内单行
+ * ellipsis 展示会吃掉换行和连续空白, 所以悬停时按原文弹出:
+ * `white-space: pre-wrap` 保留连续空格, 制表符与换行, 不做空白合并.
+ * 气泡用 fixed 定位, 跟随锚点左边缘与宽度 (不越过右边界), 向上展开.
+ * @param props.text - 行内标签原文 (完整命令行).
+ * @param props.style - 行内标签自身的排版样式 (省略号截断等).
+ * @returns 标签元素与悬停气泡.
+ */
+function CommandLabel(props: { text: string; style: CSSProperties }): ReactNode {
+  const { text, style } = props
+  const anchor = useRef<HTMLSpanElement | null>(null)
+  const [box, setBox] = useState<{ left: number; top: number; width: number } | null>(null)
+  const show = (): void => {
+    const el = anchor.current
+    if (el === null) return
+    const rect = el.getBoundingClientRect()
+    setBox({ left: rect.left, top: rect.top, width: rect.width })
+  }
+  return (
+    <>
+      <span ref={anchor} style={style} onMouseEnter={show} onMouseLeave={() => setBox(null)}>
+        {text}
+      </span>
+      {box !== null && (
+        <span
+          role="tooltip"
+          style={{
+            position: 'fixed',
+            left: box.left,
+            top: box.top - 6,
+            transform: 'translateY(-100%)',
+            // 宽度不超过锚点: 右边界天然安全, 长命令在气泡内按空白折行.
+            maxWidth: Math.min(box.width, 720),
+            padding: '6px 10px',
+            borderRadius: 8,
+            background: 'var(--dsw-alias-tooltip-bg)',
+            color: 'var(--dsw-static-neutral-bluish-00)',
+            fontFamily: 'var(--dsh-code-font-family, ui-monospace, monospace)',
+            fontSize: 12,
+            lineHeight: '18px',
+            whiteSpace: 'pre-wrap',
+            overflowWrap: 'break-word',
+            pointerEvents: 'none',
+            zIndex: 100,
+          }}
+        >
+          {text}
+        </span>
+      )}
+    </>
+  )
+}
+
+/**
  * 对话页对话框上方的后台任务状态条：仅 Chat 视图显示（`[data-chat-flow=""]`
  * 探针），轮询该会话任务（running 高亮 + 展开逐条）。
  */
@@ -298,9 +352,10 @@ export function TaskStatusBar(
           onClick={() => setExpandedTask(expanded ? null : task.id)}
         >
           <StateDot state={meta.state} size={10} />
-          <span style={{ flex: 1, fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-label-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {task.label}
-          </span>
+          <CommandLabel
+            text={task.label}
+            style={{ flex: 1, fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-label-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          />
           <span style={{ fontSize: 12, color: 'var(--dsw-alias-label-caption)', whiteSpace: 'nowrap' }}>
             {timeText(task)}
           </span>

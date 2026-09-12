@@ -22,6 +22,7 @@ A background-task status bar above the chat input box: running-task count + clic
 |---|---|
 | Status bar | Dock card above the chat input box: `⚙ N background tasks running` |
 | Expandable details | Click a task row to expand: status / duration / details + output tail |
+| Command hover | Hovering a task row label pops a bubble with the full command line, repeated spaces / tabs / newlines kept verbatim (no whitespace collapsing) |
 | Live tail | Polls the output route every 1s while expanded, re-rendering the whole block (the mirror patch guarantees zero contention with the official `task_output` tool and a consistent view) |
 | Manual stop | Click the stop icon on a running task, confirm in the native DSH dialog, and the agent sees the user-cancellation reason in the next job result |
 | Scrolling area | Output area capped at 10 lines (160px); overflow becomes a scrollbar (tail keeps the end, scrollable to review) |
