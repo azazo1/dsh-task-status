@@ -23,7 +23,7 @@ A background-task status bar above the chat input box: running-task count + clic
 | Status bar | Dock card above the chat input box: `⚙ N background tasks running` |
 | Expandable details | Click a task row to expand: status / duration / details + output tail |
 | Command hover | Hovering a task row label pops a bubble with the full command line, repeated spaces / tabs / newlines kept verbatim (no whitespace collapsing) |
-| Live tail | Polls the output route every 1s while expanded, re-rendering the whole block (the mirror patch guarantees zero contention with the official `task_output` tool and a consistent view) |
+| Live tail | Polls the output route every 1s while expanded and appends by cursor (official `jobs.readAt`, a non-consuming read that never contends with the `task_output` tool) |
 | Manual stop | Click the stop icon on a running task, confirm in the native DSH dialog, and the agent sees the user-cancellation reason in the next job result |
 | Scrolling area | Output area capped at 10 lines (160px); overflow becomes a scrollbar (tail keeps the end, scrollable to review) |
 | Chat page only | Automatically hidden on non-Chat views (trajectory / taskboard, etc.) |
@@ -32,11 +32,13 @@ A background-task status bar above the chat input box: running-task count + clic
 
 | Route | Description |
 |---|---|
-| `/plugins/dsh-task-status/tasks` | Task list (read-only, filtered by session; owned + unowned union) |
-| `/plugins/dsh-task-status/output` | Task output tail (`full:true` accumulates the full text; unknown id → 404) |
-| `/plugins/dsh-task-status/kill` | Stop an owned running task with a user-requested cancellation reason |
+| `/plugins/dsh-task-status/tasks` | Task list (read-only; needs `sessionId`; returns that session's own tasks) |
+| `/plugins/dsh-task-status/output` | Task output tail (needs `id`/`sessionId` and an optional `from`; returns incremental `chunks` + resume offset `next` + retention-loss flag `lossy`) |
+| `/plugins/dsh-task-status/kill` | Stop a task the session owns (`POST { id, sessionId }`); the user-cancellation reason goes to the official `jobs.kill`, which writes it into the task detail |
 
-**Output tail contention semantics** (official 0809 API constraint): `tasks.read` is a consumptive, incremental read (one shared cursor per task). This plugin applies a **mirror patch** to `ctx.tasks.read` — the official read becomes buffered mirror (increments already read by others, not re-consumed) + direct read of the latest (normal consumption); the plugin's own reads go straight to the underlying rawRead. The official tool and the plugin see the same increment sequence (no duplicates, no loss); only the proactively self-read part can no longer be replayed by the official side alone (official semantics is inherently incremental, so model perception is unaffected).
+**Output tail data channel** (dsh 0.1.7 jobs API): the plugin reads the job's retained ring through the official `jobs.readAt(id, from, sessionId)` (256 KiB while running / 16 KiB once settled) — a non-consuming read that never advances the `task_output` tool's model cursor, so no patching is involved and both sides see the complete stream. The client resumes from `next` and keeps the last 64 KiB locally; a `lossy` read inserts one truncation notice into the output.
+
+> Before dsh 0.1.7 the jobs API only had the consumptive `read` (`{ text, snapshot }`), and this plugin worked around cursor contention by patching `ctx.jobs.read` with a mirror read. 0.1.7 replaced the jobs service with a ring and two cursors, where that patch throws `Cannot read properties of undefined (reading 'id')`. This version targets 0.1.7 and removes the patch, so it **requires dsh >= 0.1.7** (use v0.3.1 for 0.1.6 and earlier).
 
 ## Installation
 
@@ -66,7 +68,7 @@ pnpm install
 pnpm run build      # tsdown: Node half (lib/index.mjs) + client bundle (lib/client.js)
 ```
 
-- Node half: `src/index.mjs` (mirror patch + `/tasks` `/output` routes)
+- Node half: `src/index.mjs` (three jobs routes: `/tasks` `/output` `/kill`)
 - client: `src/client/task-status.tsx` (dock-slot status bar)
 
 ## License

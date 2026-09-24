@@ -1,146 +1,82 @@
-// azazo1/dsh-task-status Node half：自造数据通道——注册一个只读 JSON 路由，
-// 轮询时返回宿主 `ctx.jobs` 的当前任务快照。不依赖官方推送帧（useTasks /
-// task/snapshot）：客户端每 1s fetch 本路由刷新，官方树零改动。
+// azazo1/dsh-task-status Node half: 两条只读数据路由 + 一条用户终止路由.
 //
-// 任务可见性：`jobs.list(caller)` 的 owner fence 让无 agent 身份的调用方
-// 只看到 unowned 任务，所以这里遍历 `ctx.agents.list()` 逐个取 owned 任务
-// 再并上 unowned（按 id 去重）——这是示例演示的"自造缝"替代 `listOwned`。
+// 数据源是官方 jobs 服务 (dsh 0.1.7 的 ring 版 API):
+// - `jobs.list(sessionId)` 返回该会话自己的任务 + 无主任务;
+// - `jobs.get(id, sessionId)` 取一条快照 (非消耗, 未知或越权抛错);
+// - `jobs.readAt(id, from, sessionId)` 读保留区增量: **不推进模型游标**,
+//   返回 `{ chunks, next, lossy }` —— 这是插件 tail 的唯一数据源;
+// - `jobs.kill(id, sessionId, reason)` 请求终止, reason 会在任务 settle 为
+//   killed 时并入 detail, agent 下次读任务结果时能看到用户主动终止原因.
 //
-// 输出 tail 的现实约束（官方 jobs API）：
-// - `jobs.get(id)` 是非消耗快照，但 JobSnapshot **不含输出文本**（仅元数据）；
-// - 唯一输出通道是 `jobs.read(id)`：stream 任务返回"上次读取以来的增量"并
-//   推进**每任务唯一共享游标**（官方 `task_output` 工具走同一游标）。
-// 因此"非消耗式 peek 全文"在 0809 上**不存在**。
+// 因此早期版本给 `jobs.read` 打的镜像补丁 (rawRead + shadow 缓冲 + 官方
+// 消费游标记账) 已无必要: 插件与官方 `task_output` 工具走两条互不干扰的
+// 读通道, 插件只读保留区, 官方消耗式游标完全不受影响.
 //
-// 竞争解法（镜像补丁）：给 `ctx.jobs.read` 打**镜像优先补丁**——
-// - 官方 read：缓冲里有"官方尚未消费"的增量 → **从缓冲切片返回**（不推进
-//   producer 游标，零消耗）；无货 → **回退直读**（原语义，消耗 + 累积 +
-//   推进官方镜像游标）。官方看到的增量序列与无插件时**逐字节一致**。
-// - 本插件自读：直接调底层 rawRead（绕过补丁，producer 游标唯一推进者）
-//   + 累积进缓冲；tail 路由返回累积全文（full: true 契约）。
-// 效果：官方零干扰（折叠时恒直读、展开时镜像=直读视图）、插件 tail 完整
-// 实时（≤1s 滞后）、无重复（官方镜像游标只前移）、无丢失（缓冲 = 全部已读
-// 增量顺序累积）。唯一残留：producer 游标仍被插件推进（消耗的唯一性），
-// 但官方感知无差异。镜像分支用 get 取快照（不置 reported），终态通知仍由
-// 官方 onJobDone/wait 交付。
+// caller 一律是 SessionId (浏览器侧的会话 id), 由客户端在请求里带上.
 
-/** 只读任务列表路由（与 client bundle 轮询地址一致）。 */
+/** 只读任务列表路由 (与 client bundle 轮询地址一致). */
 export const TASKS_PATH = '/plugins/dsh-task-status/tasks'
 
-/** 任务输出读取路由（tail：返回 shadow 缓冲累积全文，full: true 契约）。 */
+/** 任务输出读取路由 (非消耗式读保留区, 按 from 游标返回增量 chunks). */
 export const OUTPUT_PATH = '/plugins/dsh-task-status/output'
 
-/** 任务终止路由（只允许任务 owner session 发起）。 */
+/** 任务终止路由 (只允许任务 owner session 发起). */
 export const KILL_PATH = '/plugins/dsh-task-status/kill'
 
-/** User-visible reason preserved for the agent's next job read. */
+/** 用户从状态条发起终止时写入任务 detail 的原因. */
 const USER_CANCEL_REASON = 'cancelled by user from task-status UI'
 
-/** taskId -> user cancellation reason. */
-const cancellationReasons = new Map()
-
-/** shadow 缓冲上限：超限丢最旧（tail 保尾），防长任务无界增长。 */
-const OUTPUT_BUF_MAX = 64 * 1024
-
-/** taskId -> 累积输出（全部已读增量的顺序累积：插件自读 + 官方直读）。 */
-const outputBuffers = new Map()
-
-/** taskId -> 官方 read 已消费的缓冲长度（镜像游标，仅补丁维护、只前移）。 */
-const officialConsumed = new Map()
-
-/** 底层原始 jobs.read（apply 时绑定）；插件自读直接调它绕过补丁。 */
-let rawRead = undefined
-
-/** 把一段增量追加进 shadow 缓冲（保尾截断）。 */
-function accumulate(id, text) {
-  if (typeof text !== 'string' || text.length === 0) return
-  const prev = outputBuffers.get(id) ?? ''
-  outputBuffers.set(id, (prev + text).slice(-OUTPUT_BUF_MAX))
-}
-
-/** Cordis 插件名。 */
+/** Cordis 插件名. */
 export const name = 'task-status'
 
-/** 所需服务：web 形状的 HTTP 载体 + 任务注册表 + agent 注册表。 */
-export const inject = ['webServer', 'jobs', 'agents']
+/** 所需服务: web 形状的 HTTP 载体 + 任务注册表. */
+export const inject = ['webServer', 'jobs']
 
-/** Add the user cancellation reason to a task snapshot without mutating host state. */
-function decorateSnapshot(snapshot) {
-  const reason = cancellationReasons.get(snapshot.id)
-  if (reason === undefined) return snapshot
-  const detail = snapshot.detail === undefined ? reason : `${snapshot.detail}; ${reason}`
-  return { ...snapshot, detail }
+/** 统一取错误信息. */
+function messageOf(error) {
+  return error instanceof Error ? error.message : String(error)
 }
 
-/** 裁剪任务快照到 wire 视图（内部记账不跨线；owner 只投影 session id）。 */
-function toWire(snapshot) {
-  const visible = decorateSnapshot(snapshot)
+/** 写一个 JSON 响应. */
+function sendJson(res, status, payload) {
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
+  res.end(JSON.stringify(payload))
+}
+
+/** 以 JSON 形式返回一条错误. */
+function sendError(res, status, message) {
+  sendJson(res, status, { error: message })
+}
+
+/** 解析请求 URL (查询参数: sessionId / id / from). */
+function requestUrl(req) {
+  return new URL(req.url ?? '/', 'http://dsh.internal')
+}
+
+/** 裁剪任务投影到 wire 视图 (内部记账不跨线; `owner` 就是 session id). */
+function toWire(job) {
   return {
-    id: visible.id,
-    kind: visible.kind,
-    label: visible.label,
-    status: visible.status,
-    ...(visible.detail !== undefined ? { detail: visible.detail } : {}),
-    startedAt: visible.startedAt,
-    ...(visible.finishedAt !== undefined ? { finishedAt: visible.finishedAt } : {}),
-    ...(visible.ownerSession !== undefined ? { ownerSession: visible.ownerSession } : {}),
+    id: job.id,
+    kind: job.kind,
+    label: job.label,
+    status: job.status,
+    ...(job.detail !== undefined ? { detail: job.detail } : {}),
+    ...(job.owner !== undefined ? { owner: job.owner } : {}),
+    startedAt: job.startedAt,
+    ...(job.finishedAt !== undefined ? { finishedAt: job.finishedAt } : {}),
   }
-}
-
-/** 收集宿主全部任务：owned（按 agent 遍历，绕过 owner fence）+ unowned，按 id 去重。 */
-function collectTasks(ctx) {
-  const jobs = ctx.jobs
-  const seen = new Set()
-  const out = []
-  for (const agent of ctx.agents.list()) {
-    for (const snapshot of jobs.list(agent)) {
-      if (snapshot.ownerSession === undefined || seen.has(snapshot.id)) continue
-      seen.add(snapshot.id)
-      out.push(toWire(snapshot))
-    }
-  }
-  for (const snapshot of jobs.list()) {
-    if (seen.has(snapshot.id)) continue
-    seen.add(snapshot.id)
-    out.push(toWire(snapshot))
-  }
-  return out
 }
 
 /**
- * 读取一个任务的输出 tail（镜像版）：先按 agent 遍历找到任务的 owner（其
- * `list(agent)` 含该 id），用该 agent 身份**直接调底层 rawRead**（绕过镜像
- * 补丁——本插件是 producer 游标的唯一主动推进者），增量累积进 shadow 缓冲；
- * unowned 任务直接 rawRead。返回**累积全文**（客户端整段替换）。
- *
- * 自读仅发生在用户展开任务时；展开期间任务终态会使 read 置 `reported`
- * （官方"首次消耗式 read 交付终态通知"语义被提前触发）——窗口有限、可接受。
- * @param ctx - host cordis context。
- * @param id - 任务 id。
- * @returns 累积 text 与读后快照；任务不存在返回 null。
+ * 列出该会话自己的任务: 无主任务不属于任何会话的状态条, 直接滤掉.
+ * @param ctx - host cordis context.
+ * @param sessionId - 浏览器侧会话 id (官方 owner fence 的 caller).
+ * @returns wire 视图数组.
  */
-function readTaskOutput(ctx, id) {
-  // 先确认任务存在（列表视图非消耗式），未知 id 直接 404，避免消耗式 read 抛错。
-  if (!collectTasks(ctx).some(snapshot => snapshot.id === id)) return null
-  const jobs = ctx.jobs
-  let caller
-  for (const agent of ctx.agents.list()) {
-    if (jobs.list(agent).some(snapshot => snapshot.id === id)) {
-      caller = agent
-      break
-    }
-  }
-  const read = caller === undefined ? rawRead(id) : rawRead(id, caller)
-  accumulate(id, read?.text)
-  return { text: outputBuffers.get(id) ?? '', snapshot: decorateSnapshot(read.snapshot) }
-}
-
-function findOwnedTask(ctx, id, sessionId) {
-  for (const agent of ctx.agents.list()) {
-    const snapshot = ctx.jobs.list(agent).find(task => task.id === id)
-    if (snapshot?.ownerSession === sessionId) return { agent, snapshot }
-  }
-  return null
+function listSessionTasks(ctx, sessionId) {
+  return ctx.jobs.list(sessionId)
+    .filter(job => job.owner === sessionId)
+    .map(toWire)
 }
 
 /**
@@ -158,57 +94,26 @@ async function readJsonBody(req) {
 }
 
 /**
- * Cancel a task from the status bar on behalf of its owner session.
+ * 插件主体: 注册任务列表 / 输出增量 / 终止三条精确路由, 不修改宿主任何
+ * 服务方法. handler 异常按缺失参数 (400) / 任务不可见 (404) / 其它 (500)
+ * 返回, 客户端轮询吞掉瞬态错误.
  * @param ctx - host cordis context.
- * @param id - task id.
- * @param sessionId - current browser session id.
- * @returns kill result and the post-kill snapshot.
- */
-function killTask(ctx, id, sessionId) {
-  const owned = findOwnedTask(ctx, id, sessionId)
-  if (owned === null) return null
-  const outcome = ctx.jobs.kill(id, owned.agent, 'User requested cancellation from task-status UI')
-  if (outcome === 'requested') cancellationReasons.set(id, USER_CANCEL_REASON)
-  return { outcome, snapshot: decorateSnapshot(ctx.jobs.get(id, owned.agent)) }
-}
-
-/**
- * 插件主体：打 read 镜像补丁 + 注册任务列表与输出读取路由。镜像补丁让官方
- * read 优先从缓冲切片（零消耗），无货回退直读（原语义）；dispose 时恢复
- * 原方法。路由 handler 异常以 500 返回，客户端轮询吞掉瞬态错误。
- * @param ctx - host cordis context。
  */
 export function apply(ctx) {
   ctx.effect(() => {
-    // 绑定底层原始 read（插件自读经 rawRead 绕过补丁）。
-    rawRead = ctx.jobs.read.bind(ctx.jobs)
-    // 镜像补丁（镜像 + 直读补最新）：官方 read = 缓冲中"官方未消费"的增量
-    // （别人已读的，镜像返回，不重复消耗 producer 游标）+ 直读"producer 未读"
-    // 的最新增量（正常消耗）。官方视图完整无滞后、无重复；每个增量恰好被
-    // 消耗一次（插件自读或官方直读），双方都能看到全量。
-    ctx.jobs.read = (id, caller) => {
-      const buf = outputBuffers.get(id)
-      const consumed = officialConsumed.get(id) ?? 0
-      const mirror = buf !== undefined && buf.length > consumed ? buf.slice(consumed) : ''
-      // 直读补最新：消耗 producer 游标（拿自官方上次 read 以来新产出的增量），
-      // 同时累积进缓冲（插件视图也完整）。
-      const result = rawRead(id, caller)
-      accumulate(id, result?.text)
-      const text = mirror + (result?.text ?? '')
-      officialConsumed.set(id, (buf?.length ?? 0) + (typeof result?.text === 'string' ? result.text.length : 0))
-      return { text, snapshot: decorateSnapshot(result.snapshot) }
-    }
     const disposeTasks = ctx.webServer.register({
       kind: 'exact',
       path: TASKS_PATH,
-      handler: async (_req, res) => {
+      handler: async (req, res) => {
         try {
-          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ tasks: collectTasks(ctx) }))
+          const sessionId = requestUrl(req).searchParams.get('sessionId') ?? ''
+          if (sessionId === '') {
+            sendError(res, 400, 'missing session id')
+            return
+          }
+          sendJson(res, 200, { tasks: listSessionTasks(ctx, sessionId) })
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: message }))
+          sendError(res, 500, messageOf(error))
         }
       },
     })
@@ -217,26 +122,37 @@ export function apply(ctx) {
       path: OUTPUT_PATH,
       handler: async (req, res) => {
         try {
-          const url = new URL(req.url ?? '/', 'http://dsh.internal')
+          const url = requestUrl(req)
           const id = url.searchParams.get('id') ?? ''
-          if (id === '') {
-            res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
-            res.end(JSON.stringify({ error: 'missing task id' }))
+          const sessionId = url.searchParams.get('sessionId') ?? ''
+          if (id === '' || sessionId === '') {
+            sendError(res, 400, 'missing task id or session id')
             return
           }
-          const read = readTaskOutput(ctx, id)
-          if (read === null || read.snapshot === undefined) {
-            res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })
-            res.end(JSON.stringify({ error: `task ${id} not found` }))
+          // get 先落 404 (未知任务 / 越权任务), 顺带拿到保留区起点.
+          let job
+          try {
+            job = ctx.jobs.get(id, sessionId)
+          } catch (error) {
+            sendError(res, 404, messageOf(error))
             return
           }
-          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-          // full: true = peek 全文契约（客户端整段替换）；缺省视为旧增量契约。
-          res.end(JSON.stringify({ text: read.text, full: true, snapshot: read.snapshot }))
+          const fromText = url.searchParams.get('from')
+          const from = fromText === null ? job.output.earliest : Number(fromText)
+          if (!Number.isSafeInteger(from) || from < 0) {
+            sendError(res, 400, 'invalid output offset')
+            return
+          }
+          let read
+          try {
+            read = ctx.jobs.readAt(id, from, sessionId)
+          } catch (error) {
+            sendError(res, 404, messageOf(error))
+            return
+          }
+          sendJson(res, 200, { chunks: read.chunks, next: read.next, lossy: read.lossy })
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: message }))
+          sendError(res, 500, messageOf(error))
         }
       },
     })
@@ -254,31 +170,26 @@ export function apply(ctx) {
           const id = typeof body?.id === 'string' ? body.id : ''
           const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : ''
           if (id === '' || sessionId === '') {
-            res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
-            res.end(JSON.stringify({ error: 'missing task id or session id' }))
+            sendError(res, 400, 'missing task id or session id')
             return
           }
-          const result = killTask(ctx, id, sessionId)
-          if (result === null) {
-            res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })
-            res.end(JSON.stringify({ error: 'task not found for session' }))
+          // 先按官方 owner fence 确认这条任务对该会话可见, 越权与未知同答 404.
+          try {
+            ctx.jobs.get(id, sessionId)
+          } catch (error) {
+            sendError(res, 404, messageOf(error))
             return
           }
-          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ ...result, reason: 'user-requested-cancellation' }))
+          sendJson(res, 200, { outcome: ctx.jobs.kill(id, sessionId, USER_CANCEL_REASON) })
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: message }))
+          sendError(res, 500, messageOf(error))
         }
       },
     })
     return () => {
-      ctx.jobs.read = rawRead
-      rawRead = undefined
       disposeTasks()
       disposeOutput()
       disposeKill()
     }
-  }, 'task-status: mirror jobs.read + jobs/output routes')
+  }, 'task-status: jobs routes (tasks/output/kill)')
 }

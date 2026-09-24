@@ -2,9 +2,9 @@
 // （composer）上方的任务状态条。经 `conversation.input.dock`（list 槽，
 // 与 queue/todo 同 strip，官方既有）注册。
 //
-// 数据不再依赖 useTasks / task/snapshot 推送帧（官方基线无此 API）：Node
-// half 注册只读任务路由，本组件每 1s 轮询并只渲染当前会话（ownerSession
-// 等于 InputZone.session.sessionId）的活跃任务——这是"插件自造缝"的示例。
+// 数据不依赖官方推送帧：Node half 注册只读任务路由（官方 `jobs.list`），
+// 本组件每 1s 轮询并渲染当前会话（任务投影的 `owner` 等于 sessionId）的
+// 活跃任务——这是"插件自造缝"的示例。
 //
 // 仅对话页显示：对话流列 `[data-chat-flow=""]` 只存在于 Chat 视图（与
 // navbar 同一信号）——组件用 MutationObserver 检测其存在性，切到
@@ -29,7 +29,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-/** Node half 只读任务路由（与 examples/task-status/index.mjs 的 TASKS_PATH 一致）。 */
+/** Node half 只读任务路由（与 src/index.mjs 的 TASKS_PATH 一致）。 */
 const TASKS_PATH = '/plugins/dsh-task-status/tasks'
 
 /** Node half 任务输出读取路由（与 src/index.mjs 的 OUTPUT_PATH 一致）。 */
@@ -40,6 +40,9 @@ const KILL_PATH = '/plugins/dsh-task-status/kill'
 
 /** 轮询间隔：活跃任务状态条不需要亚秒刷新。 */
 const POLL_MS = 1000
+
+/** 客户端输出尾长上限（与服务端 ring 保留量同量级，防长任务无界增长）。 */
+const OUTPUT_MAX = 64 * 1024
 
 const NS = 'task-status'
 const zh = {
@@ -53,6 +56,7 @@ const zh = {
   'task.killed': '已终止',
   'task.failed': '失败',
   'task.cancel': '终止任务',
+  'output.lossy': '... 更早的输出已被保留区丢弃',
   'confirm.title': '确认终止任务？',
   'confirm.description': '终止后任务会收到用户主动终止信号, 未完成的工作可能丢失.',
   'confirm.cancel': '取消',
@@ -71,6 +75,7 @@ const en = {
   'task.killed': 'Killed',
   'task.failed': 'Failed',
   'task.cancel': 'Stop task',
+  'output.lossy': '... earlier output dropped by retention',
   'confirm.title': 'Stop task?',
   'confirm.description': 'The task will receive a user cancellation signal and unfinished work may be lost.',
   'confirm.cancel': 'Cancel',
@@ -93,7 +98,7 @@ const STATUS_META: Record<string, { state: 'ongoing' | 'warning' | 'done' | 'err
   failed: { state: 'error', label: 'task.failed' },
 }
 
-/** Node half 返回的 wire 任务视图（ownerSession 为宿主 session id）。 */
+/** Node half 返回的 wire 任务视图（owner 为宿主 session id，无主任务不出现）。 */
 interface WireTask {
   id: string
   kind: string
@@ -102,17 +107,17 @@ interface WireTask {
   detail?: string
   startedAt: number
   finishedAt?: number
-  ownerSession?: string
+  owner?: string
 }
 
-/** 会话级轮询 hook：每 POLL_MS 拉取 Node half 路由，返回该会话的活跃任务。 */
+/** 会话级轮询 hook：每 POLL_MS 拉取 Node half 路由，返回该会话的任务。 */
 function useSessionTasks(sessionId: string): WireTask[] {
   const [tasks, setTasks] = useState<WireTask[]>([])
   useEffect(() => {
     let alive = true
     const poll = async (): Promise<void> => {
       try {
-        const res = await fetch(TASKS_PATH, { headers: { accept: 'application/json' } })
+        const res = await fetch(`${TASKS_PATH}?sessionId=${encodeURIComponent(sessionId)}`, { headers: { accept: 'application/json' } })
         if (!res.ok) return
         const data = (await res.json()) as { tasks?: WireTask[] }
         if (alive && Array.isArray(data.tasks)) setTasks(data.tasks)
@@ -124,7 +129,7 @@ function useSessionTasks(sessionId: string): WireTask[] {
     const timer = setInterval(() => { void poll() }, POLL_MS)
     return () => { alive = false; clearInterval(timer) }
   }, [sessionId])
-  return tasks.filter(task => task.ownerSession === sessionId)
+  return tasks
 }
 
 /** Request a user-intended cancellation for one task. */
@@ -142,40 +147,47 @@ async function requestTaskKill(taskId: string, sessionId: string): Promise<boole
 }
 
 /**
- * 任务输出 tail：展开任务时**自动轮询** Node half 输出路由。Node half 给
- * `ctx.tasks.read` 打了**镜像补丁**（见 src/index.mjs）——官方 read = 缓冲
- * 镜像（他人已读增量，不重复消耗）+ 直读补最新（正常消耗），官方视图与
- * 无插件时逐字节一致；本插件自读直接走底层 rawRead 并累积。路由带
- * `full: true` 返回累积全文——客户端**整段替换**渲染（tail -f 效果，无需
- * 按钮）。双方视图 = 全量（无重复无丢失无滞后）。兼容旧路由（无 `full`
- * 标志 = 增量契约）：此时**追加**。
+ * 任务输出 tail：展开任务时**自动轮询** Node half 输出路由。路由走官方
+ * `jobs.readAt`——非消耗式读保留区，按 `from` 游标返回增量 `chunks`、
+ * 续读位移 `next` 和丢弃标记 `lossy`；本 hook 累积增量并只保留尾部
+ * OUTPUT_MAX，与官方 `task_output` 工具的消耗式游标互不干扰（插件读不到
+ * 也不推进模型游标，官方视图与无插件时逐字节一致）。
  * @param taskId - 当前展开的任务 id；null 时不轮询。
- * @returns 当前输出文本（整段替换或增量追加后）。
+ * @param sessionId - 当前会话 id（官方 owner fence 的 caller）。
+ * @param lossyLabel - 保留区截断时的提示文案。
+ * @returns 累积的输出文本（tail）。
  */
-function useTaskOutput(taskId: string | null): string {
+function useTaskOutput(taskId: string | null, sessionId: string, lossyLabel: string): string {
   const [output, setOutput] = useState('')
   useEffect(() => {
-    if (taskId === null) {
-      setOutput('')
-      return
-    }
+    setOutput('')
+    if (taskId === null) return
     let alive = true
+    let cursor = 0
+    let lossySeen = false
     const poll = async (): Promise<void> => {
       try {
-        const res = await fetch(`${OUTPUT_PATH}?id=${encodeURIComponent(taskId)}`, { headers: { accept: 'application/json' } })
+        const query = `id=${encodeURIComponent(taskId)}&sessionId=${encodeURIComponent(sessionId)}&from=${cursor}`
+        const res = await fetch(`${OUTPUT_PATH}?${query}`, { headers: { accept: 'application/json' } })
         if (!res.ok) return
-        const data = (await res.json()) as { text?: string; full?: boolean }
-        if (!alive || typeof data.text !== 'string') return
-        // peek 全文（full:true）整段替换；旧增量契约（无 full）追加累积。
-        setOutput(prev => data.full === true ? data.text : prev + data.text)
+        const data = (await res.json()) as { chunks?: { text?: string }[]; next?: number; lossy?: boolean }
+        if (!alive || !Array.isArray(data.chunks)) return
+        const text = data.chunks.map(chunk => chunk.text ?? '').join('')
+        let marker = ''
+        if (data.lossy === true && !lossySeen) {
+          lossySeen = true
+          marker = `${lossyLabel}\n`
+        }
+        if (typeof data.next === 'number' && data.next >= cursor) cursor = data.next
+        if (marker !== '' || text !== '') setOutput(prev => (prev + marker + text).slice(-OUTPUT_MAX))
       } catch {
-        // 瞬态网络错误：保持当前输出。
+        // 瞬态网络错误：保持当前输出，下轮从同一游标重试。
       }
     }
     void poll()
     const timer = setInterval(() => { void poll() }, POLL_MS)
     return () => { alive = false; clearInterval(timer) }
-  }, [taskId])
+  }, [taskId, sessionId, lossyLabel])
   return output
 }
 
@@ -247,7 +259,7 @@ export function TaskStatusBar(
   const [expandedTask, setExpandedTask] = useState<string | null>(null)
   const [confirmingTask, setConfirmingTask] = useState<string | null>(null)
   const [cancellingTask, setCancellingTask] = useState<string | null>(null)
-  const taskOutput = useTaskOutput(expandedTask)
+  const taskOutput = useTaskOutput(expandedTask, session.sessionId, t('output.lossy'))
 
   const cancelTask = async (taskId: string): Promise<void> => {
     if (cancellingTask !== null) return

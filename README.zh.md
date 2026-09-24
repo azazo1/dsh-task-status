@@ -23,7 +23,7 @@
 | 状态条 | 对话页输入框上方 dock 卡片：`⚙ N 个后台任务运行中` |
 | 展开详情 | 点击任务行展开：状态/耗时/详情 + 输出 tail |
 | 命令悬停 | 悬停任务行标签弹出气泡显示完整命令行, 原样保留连续空格/制表符/换行 (不做空白合并) |
-| 实时 tail | 展开时每 1s 轮询输出路由, 整段替换渲染 (镜像补丁保证与官方 `task_output` 工具零竞争, 视图一致) |
+| 实时 tail | 展开时每 1s 轮询输出路由, 按游标增量拉取并渲染 (走官方 `jobs.readAt` 非消耗式读, 与 `task_output` 工具互不干扰) |
 | 手动终止 | 点击运行中任务右侧的终止按钮, 在 DSH 原生确认框中确认后终止, agent 会在下次任务结果中看到用户主动终止原因 |
 | 滚动区 | 输出区 max 10 行 (160px), 超出变滚动条 (tail 保尾可回看) |
 | 仅对话页 | 非 Chat 视图（trajectory/taskboard 等）自动隐藏 |
@@ -32,11 +32,13 @@
 
 | 路由 | 说明 |
 |---|---|
-| `/plugins/dsh-task-status/tasks` | 任务列表（只读，按 session 过滤；owned + unowned 并集） |
-| `/plugins/dsh-task-status/output` | 任务输出 tail（`full:true` 累积全文；未知 id 404） |
-| `/plugins/dsh-task-status/kill` | 终止当前 session 拥有的运行中任务, 并传递用户主动终止 reason |
+| `/plugins/dsh-task-status/tasks` | 任务列表（只读，需 `sessionId`；只回该会话自己的任务） |
+| `/plugins/dsh-task-status/output` | 任务输出 tail（需 `id`/`sessionId` 与可选 `from`；返回增量 `chunks` + 续读位移 `next` + 保留区丢弃标记 `lossy`） |
+| `/plugins/dsh-task-status/kill` | 终止该会话拥有的任务（`POST { id, sessionId }`），用户终止原因交给官方 `jobs.kill` 写进任务 detail |
 
-**输出 tail 的竞争语义**（0809 官方 API 约束）：`tasks.read` 是消耗式增量（每任务唯一共享游标）。本插件给 `ctx.tasks.read` 打**镜像补丁**——官方 read = 缓冲镜像（他人已读增量，不重复消耗）+ 直读补最新（正常消耗）；插件自读直接走底层 rawRead。官方工具与插件看到同一增量序列（无重复无丢失），仅主动自读部分官方不再能单独重放（官方语义本就是增量读取，模型感知无影响）。
+**输出 tail 的数据通道**（dsh 0.1.7 jobs API）：插件走官方 `jobs.readAt(id, from, sessionId)` 读任务保留区（运行中 256 KiB / 已结束 16 KiB）——非消耗式读取, 不推进 `task_output` 工具的模型游标, 所以插件不需要任何打补丁手段, 双方各自看到完整增量。客户端按 `next` 续读, 本地只保留尾部 64 KiB；`lossy` 为真时在输出里插一行截断提示。
+
+> dsh 0.1.7 之前的 jobs API 只有消耗式 `read`（`{ text, snapshot }`），本插件当时靠给 `ctx.jobs.read` 打镜像补丁来规避游标竞争；0.1.7 把 jobs 服务换成 ring + 双游标后该补丁会抛 `Cannot read properties of undefined (reading 'id')`。本版本适配 0.1.7 并删除补丁, 因此**要求 dsh >= 0.1.7**（0.1.6 及更早请使用 v0.3.1）。
 
 ## 安装
 
@@ -66,7 +68,7 @@ pnpm install
 pnpm run build      # tsdown：Node half (lib/index.mjs) + client bundle (lib/client.js)
 ```
 
-- Node half：`src/index.mjs`（镜像补丁 + `/tasks` `/output` 路由）
+- Node half：`src/index.mjs`（三条 jobs 路由：`/tasks` `/output` `/kill`）
 - client：`src/client/task-status.tsx`（dock 槽状态条）
 
 ## 许可
