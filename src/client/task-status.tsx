@@ -11,14 +11,15 @@
 // trajectory/taskboard 等视图时隐藏、切回恢复。零官方改动。
 import { useEffect, useRef, useState } from 'react'
 import { Button, Modal, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { Context } from 'cordis'
+import type { Context } from '@deepseek-ai/cordis'
 import type { CSSProperties, ReactNode } from 'react'
-// Context merges: slots/locale (runtime) reach this program through their
-// client entries.
-import type {} from '@deepseek-ai/dsh-client-runtime/client'
+// Context merges: the client scope comes from `@deepseek-ai/cordis`; the
+// `slots` service is declared by ui-renderer and `locale` by dsh-client-locale,
+// so their client entries must be in this program's type graph.
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 // SlotMap merge: conversation.input.dock (ui-conversation) is declared by its
-// contract.
+// contract, and the owner share (InputZone) carries the Session snapshot.
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 
@@ -301,7 +302,7 @@ export function TaskStatusBar(
       closeLabel={t('confirm.cancel')}
       footer={
         <>
-          <Button variant="secondary" onClick={() => setConfirmingTask(null)}>
+          <Button variant="outline" onClick={() => setConfirmingTask(null)}>
             {t('confirm.cancel')}
           </Button>
           <Button variant="primary" disabled={cancellingTask !== null} onClick={confirmTask}>
@@ -312,7 +313,8 @@ export function TaskStatusBar(
     />
   )
 
-  const statusOf = (status: string): { color: string; glyph: string; label: string } =>
+  // 视觉详情由 StateDot 承担: 这里只回状态语义与文案键.
+  const statusOf = (status: string): { state: 'ongoing' | 'warning' | 'done' | 'error'; label: string } =>
     STATUS_META[status] ?? { state: 'warning', label: status }
 
   const header = (
@@ -371,7 +373,7 @@ export function TaskStatusBar(
           <span style={{ fontSize: 12, color: 'var(--dsw-alias-label-caption)', whiteSpace: 'nowrap' }}>
             {timeText(task)}
           </span>
-          <span style={{ fontSize: 12, color: meta.color, whiteSpace: 'nowrap' }}>
+          <span style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
             {t(meta.label as TaskStatusKey)}
           </span>
           {task.status === 'running' && (

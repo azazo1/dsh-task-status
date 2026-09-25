@@ -44,11 +44,21 @@
 
 **推荐：git 源一行安装**（构建产物已入库，git 源不触发构建）：
 
-```sh
-dsh plugin add --profile web azazo1/dsh-task-status
+Web 端装进 `web` profile:
+
+```shell
+dsh plugin --profile web add azazo1/dsh-task-status
 ```
 
-装完后重启 web 生效; 可在设置页 Plugins 面板停用或启用.
+装完重启 `dsh web`, 浏览器里刷新一次页面.
+
+桌面端装进 `desktop` profile. 它由 Electron 应用独占管理, `dsh plugin` 会拒绝 `--profile desktop`, 所以要用应用内的插件管理器: 在插件页的安装入口填上面命令里对应的包名或本地目录. 装上后重启应用, 窗口刷新一次.
+
+引擎版本线要求 `@deepseek-ai/dsh-*` 不低于 `0.1.7-rc.2`, 且仍在 `0.1.x` 上 (peerDependencies 与 devDependencies 都写作 `>=0.1.7-rc.2 <0.2.0`). 更早的引擎线装不上这个版本.
+
+web 与 desktop 两个 profile 跑的是同一套 Web 应用, 桌面端只是多起一个 Host 子进程并给 `<html>` 打上平台标记, 所以同一份包在两边通用, 不需要分别构建.
+
+装完后可在设置页 Plugins 面板停用或启用.
 
 ## 使用
 

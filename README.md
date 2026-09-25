@@ -44,11 +44,21 @@ A background-task status bar above the chat input box: running-task count + clic
 
 **Recommended: one-line install from a git source** (build artifacts are committed; a git source doesn't trigger a build):
 
-```sh
-dsh plugin add --profile web azazo1/dsh-task-status
+Web installs into the `web` profile:
+
+```shell
+dsh plugin --profile web add azazo1/dsh-task-status
 ```
 
-After installing, restart web for it to take effect; you can disable or enable it in the Plugins panel on the settings page.
+Restart `dsh web` afterwards and refresh the browser once.
+
+Desktop installs into the `desktop` profile. That profile is owned exclusively by the Electron app and `dsh plugin` refuses `--profile desktop`, so use the in-app plugin manager: enter the package name or local directory matching the command above at the install entry on the plugins page. Restart the app afterwards and refresh the window once.
+
+The engine line requires `@deepseek-ai/dsh-*` at `0.1.7-rc.2` or newer while staying on `0.1.x` (both peerDependencies and devDependencies are written as `>=0.1.7-rc.2 <0.2.0`). Earlier engine lines cannot install this version.
+
+The `web` and `desktop` profiles run the same Web application; the desktop build only starts an extra Host subprocess and marks `<html>` with the platform, so one package serves both and needs no separate build.
+
+After installing, you can disable or enable the plugin in the Plugins panel on the settings page.
 
 ## Usage
 
